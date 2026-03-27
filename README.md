@@ -1,3 +1,6 @@
+Hecho por **Belen Becerra** y **Nicole Ugarte**
+
+
 # Dashboard de Microservicios - Arquitectura UCB 🚀
 
 Un moderno panel de control de monitoreo de microservicios desarrollado en **Python (Flask)**. Este sistema permite verificar en tiempo real el estado, disponibilidad (2.0s de timeout) y la respuesta/payload de una variedad de APIs implementadas en la arquitectura de red local (UCB).
