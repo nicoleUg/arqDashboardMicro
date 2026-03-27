@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request, jsonify
 import requests
 import json
 import threading
@@ -57,6 +57,7 @@ HTML_TEMPLATE = """
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         body { background-color: #f3f4f6; }
         .glass-panel { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
@@ -130,6 +131,7 @@ HTML_TEMPLATE = """
                             <th class="p-3 border-b font-semibold text-gray-600">Params / Payload</th>
                             <th class="p-3 border-b font-semibold text-gray-600">Estado Network</th>
                             <th class="p-3 border-b font-semibold text-gray-600">Respuesta (Payload)</th>
+                            <th class="p-3 border-b font-semibold text-gray-600">Probar</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -141,14 +143,17 @@ HTML_TEMPLATE = """
                                 <a href="{{ row.url }}{% if row.params %}?{{ row.params }}{% endif %}" target="_blank" class="hover:underline">{{ row.url }}</a>
                             </td>
                             <td class="p-3 text-gray-500 text-xs">
-                                {% if row.params %} 
-                                    <span class="text-blue-500">Q:</span> {{ row.params }}
+                                {% if row.params is not none %}
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="text-blue-500 font-bold min-w-[20px]">Q:</span> 
+                                        <input type="text" id="params_{{ loop.index }}" value="{{ row.params }}" class="border rounded px-2 py-1 w-full bg-white text-gray-700" placeholder="Ej: a=10&b=2">
+                                    </div>
                                 {% endif %}
-                                {% if row.json %} 
-                                    <span class="text-purple-500">B:</span> {{ row.json | string }}
-                                {% endif %}
-                                {% if not row.params and not row.json %}
-                                    -
+                                {% if row.json is not none %}
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-purple-500 font-bold min-w-[20px]">B:</span> 
+                                        <input type="text" id="body_{{ loop.index }}" value="{{ row.json | tojson }}" class="border rounded px-2 py-1 w-full bg-white text-gray-700 font-mono text-[10px]" placeholder='Ej: {"a":1}'>
+                                    </div>
                                 {% endif %}
                             </td>
                             <td class="p-3">
@@ -162,6 +167,11 @@ HTML_TEMPLATE = """
                                 <div class="truncate {{ 'text-green-800' if row.estado == 'ACTIVO' else 'text-red-600' }}" title="{{ row.respuesta }}">
                                     {{ row.respuesta }}
                                 </div>
+                            </td>
+                            <td class="p-3">
+                                <button onclick='ejecutarFila("{{ row.url }}", "{{ row.method }}", {{ loop.index }})' class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1 rounded text-xs shadow transition">
+                                    <i class="fas fa-play"></i> Run
+                                </button>
                             </td>
                         </tr>
                         {% endfor %}
@@ -200,6 +210,88 @@ HTML_TEMPLATE = """
                 }
             }
         });
+
+        async function ejecutarFila(url, method, index) {
+            // Obtener valores actuales de los inputs
+            const paramsInput = document.getElementById(`params_${index}`);
+            const bodyInput = document.getElementById(`body_${index}`);
+            
+            const currentParams = paramsInput ? paramsInput.value : "";
+            let currentBodyStr = bodyInput ? bodyInput.value : "";
+            
+            let payload = null;
+            if (currentBodyStr) {
+                try { 
+                    payload = JSON.parse(currentBodyStr); 
+                } catch (e) {
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'JSON Inválido',
+                        text: 'El JSON del Body no es válido. Asegúrate de usar comillas dobles {"clave":"valor"}.'
+                    });
+                    return;
+                }
+            }
+            
+            let urlCompleta = url;
+            if (currentParams) urlCompleta += "?" + currentParams;
+            
+            // 🤖 Pop-up visual animado de carga (Cargando peticion...)
+            Swal.fire({
+                title: 'Llamando al microservicio...',
+                html: `Método: <b>${method}</b><br><span class="text-sm text-blue-500 font-mono">${urlCompleta}</span>`,
+                allowOutsideClick: false,
+                didOpen: () => {
+                    Swal.showLoading();
+                }
+            });
+            
+            try {
+                const response = await fetch('/test_api', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: url,
+                        method: method,
+                        params: currentParams,
+                        json: payload
+                    })
+                });
+                
+                const data = await response.json();
+                
+                // Cerrar el popup de carga y mostrar el resultado real:
+                if (data.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: `¡Conectado! (HTTP ${data.status_code})`,
+                        html: `El microservicio respondió:<br>
+                               <pre class="bg-gray-100 p-3 rounded mt-3 text-left text-xs max-h-48 overflow-auto">${JSON.stringify(data.data, null, 2)}</pre>`
+                    });
+                } else {
+                    let errorMessage = "El servidor respondió con error o no es alcanzable.";
+                    
+                    // Si el error de Python dice que hay TimeOut o WinError, deducimos que está apagado:
+                    if(typeof data.data === 'string' && (data.data.includes("WinError 10013") || data.data.includes("timeout") || data.data.includes("ConnectTimeout"))) {
+                        errorMessage = "<b>No está conectado</b><br>El microservicio está apagado, su computadora está sin internet, o el Firewall de él/ella lo bloqueó.";
+                    } else {
+                        errorMessage = `Mensaje: <br><span class="text-red-500 text-sm font-mono">${typeof data.data === 'object' ? JSON.stringify(data.data) : data.data}</span>`;
+                    }
+
+                    Swal.fire({
+                        icon: 'error',
+                        title: `Error en la llamada (HTTP ${data.status_code})`,
+                        html: errorMessage
+                    });
+                }
+            } catch (error) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error Interno del Dashboard',
+                    text: error.toString()
+                });
+            }
+        }
     </script>
 </body>
 </html>
@@ -278,6 +370,43 @@ def dashboard():
         total_caidos=caidos,
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )
+
+@app.route('/test_api', methods=['POST'])
+def test_api():
+    """Endpoint proxy para probar URLs manualmente desde el dashboard."""
+    req_data = request.json
+    url = req_data.get('url', '')
+    method = req_data.get('method', 'GET')
+    params = req_data.get('params', '')
+    payload = req_data.get('json', None)
+    headers = req_data.get('headers', {})
+
+    url_completa = f"{url}?{params}" if params else url
+    
+    try:
+        if method.upper() == 'POST':
+            # Si el payload es un string (desde el textarea), intentar parsearlo a dict
+            if isinstance(payload, str) and payload.strip():
+                try:
+                    payload = json.loads(payload)
+                except:
+                    pass # Se enviará como texto
+            res = requests.post(url_completa, headers=headers, json=payload, timeout=3.0)
+        else:
+            res = requests.get(url_completa, headers=headers, timeout=3.0)
+            
+        try:
+            resp_data = res.json()
+        except:
+            resp_data = res.text
+
+        return jsonify({
+            "status_code": res.status_code,
+            "success": 200 <= res.status_code < 400,
+            "data": resp_data
+        })
+    except Exception as e:
+        return jsonify({"success": False, "status_code": 500, "data": str(e)})
 
 if __name__ == '__main__':
     # Usar puerto 8000 para servir
